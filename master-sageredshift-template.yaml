@@ -1,0 +1,348 @@
+---
+# Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This master template executes other templates to create a Redshift cluster, an EMR cluster with Glue, a SageMaker notebook instance and a Glue crawler for Redshift
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Environment Information
+      Parameters:
+      - VPCId
+      - VPCSubnet
+      - AvailabilityZone
+    - Label:
+        default: Redshift Parameters
+      Parameters:
+      - RedshiftMasterUserPassword
+      - DesktopAccessIp
+    - Label:
+        default: SageMaker Notebook Parameters
+      Parameters:
+      - SageMakerInstanceName
+      - SageMakerConfigName
+      - SageMakerInstanceType      
+    - Label:
+        default: EMR Parameters
+      Parameters:
+      - emrInstanceType
+      #- emrReleaseLabel     # Here, hardcoded to what stack was tested with.
+      - emrInstanceCount
+      - emrClusterName
+      #- emrLogUri
+      #- emrKeyName
+    - Label:
+        default: Glue Parameters
+      Parameters: 
+      - GlueDatabaseName
+      - GlueCrawlerName
+      - GlueRedshiftConnectionName    
+Parameters:
+  #DesktopAccessIp:
+  #  Description: IP address (V4 CIDR range) for you to access Redshift from your SQL desktop program
+  #  Type: String
+  #  MinLength: 9
+  #  Default: 0.0.0.0/0
+  VPCId:
+    Description: VPC in which to launch this stack
+    Type: AWS::EC2::VPC::Id
+  VPCSubnet:
+    Description: Subnet in which to launch this stack 
+    Type: AWS::EC2::Subnet::Id     
+  SageMakerInstanceName:
+    Description: Name for the SageMaker notebook [NOTE - must be unique in account and region]
+    Default: glueredsage
+    Type: String
+  SageMakerInstanceType:
+    Description: The type of SageMaker notebook to be provisioned
+    Type: String
+    Default: ml.t2.medium
+    AllowedValues:
+    - ml.t2.medium
+    - ml.t2.large
+    - ml.t2.xlarge
+    - ml.t2.2xlarge
+    - ml.m4.xlarge
+    - ml.m4.2xlarge
+    - ml.m4.4xlarge
+    - ml.m4.10xlarge
+    - ml.m4.16xlarge
+    - ml.p2.xlarge
+    - ml.p2.8xlarge
+    - ml.p2.16xlarge
+    - ml.p3.2xlarge
+    - ml.p3.8xlarge
+    - ml.p3.16xlarge
+  SageMakerConfigName:
+    Description: Lifecycle ConfigName  [NOTE - must be unique]
+    Type: String
+    Default: glueredsageconfig    
+  emrInstanceType:
+    Description: Choose the instance type for EMR
+    # Currently template only contains a subset of them: 
+    # https://docs.aws.amazon.com/emr/latest/ManagementGuide/emr-supported-instance-types.html 
+    Type: String
+    Default: m4.large
+    AllowedValues:
+    - m4.large 
+    - m4.xlarge 
+    - m4.2xlarge 
+    - m4.4xlarge 
+    - m4.10xlarge 
+    - m4.16xlarge
+  emrInstanceCount:
+    Type: Number
+    Default: 2
+  emrClusterName:
+    Type: String
+    Default: sageemr
+  #emrLogUri:
+  #  Type: String
+  #  Default: s3a://<s3bucket>/emr-logs/
+  #emrKeyName:
+  #  Description: Key to use to access EMR
+  #  Type: AWS::EC2::KeyPair::KeyName
+  #  Default: testkey 
+  AvailabilityZone: 
+    Description: Choose the AZ that matches the subnet
+    Type: String
+    Default: us-west-2a  
+  RedshiftMasterUserPassword:
+    Description: The password that is associated with the master user account for
+      the cluster that is being created.
+    Type: String
+    NoEcho: 'true'
+    MinLength: 8
+    MaxLength: 64    
+    AllowedPattern: ".*\\S+.*"
+    #AllowedPattern: "([a-z])([a-z]|[0-9]|[A-Z])*"      
+  GlueDatabaseName:
+    Description: Glue database to create. Note, if you change the default name, remember to change all references in the provided SageMaker notebook.
+    Type: String
+    Default: glueredsage
+  GlueCrawlerName:
+    Type: String
+    Default: GlueRedshiftCrawler
+  GlueRedshiftConnectionName:
+    Type: String
+    Default: GlueRedshiftConnection  
+Mappings:
+  AWSInfoRegionMap:
+    ap-northeast-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    ap-northeast-2:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    ap-south-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    ap-southeast-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    ap-southeast-2:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    eu-central-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    eu-west-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    sa-east-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    us-east-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    us-east-2:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    us-gov-west-1:
+      Partition: aws-us-gov
+      S3EndpointURL: https://s3-us-gov-west-1.amazonaws.com
+    us-west-1:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+    us-west-2:
+      Partition: aws
+      S3EndpointURL: https://s3.amazonaws.com
+Resources:  
+  rS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags:
+      -
+        Key: 'StackName'
+        Value: !Ref AWS::StackName
+      AccessControl: "BucketOwnerFullControl"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+
+  SageMakerInstanceSecurityGroup: 
+    DeletionPolicy: Retain  
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 instance security group for SageMaker Notebook
+      VpcId:            !Ref VPCId 
+  RedshiftStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/usingsagemakernotebookstoaccessredshiftviaglue/redshift.yaml
+      Parameters:
+        DatabaseName: dev
+        MasterUserPassword:     !Ref RedshiftMasterUserPassword 
+        SageMakerSecurityGroup: !Ref SageMakerInstanceSecurityGroup          
+        VPCId:                  !Ref VPCId     
+        VPCSubnet:              !Ref VPCSubnet
+        S3Bucket:               !Ref rS3Bucket
+        #DesktopAccessIp:        !Ref DesktopAccessIp
+  GlueRedshiftStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: 
+    - SageMakerNotebookStack
+    - RedshiftStack
+    Properties:
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/usingsagemakernotebookstoaccessredshiftviaglue/glueredshift.yaml
+      Parameters:       
+        #VPCId:                  !Ref VPCId     
+        VPCSubnet:              !Ref VPCSubnet
+        GlueDatabaseName:       !Ref GlueDatabaseName
+        GlueCrawlerName:        !Ref GlueCrawlerName
+        GlueRedshiftConnectionName: !Ref GlueRedshiftConnectionName
+        AvailabilityZone:       !Ref AvailabilityZone
+        SecurityGroupId:        
+          Fn::GetAtt:
+          - RedshiftStack
+          - Outputs.RedshiftSecurityGroup
+        RedshiftClusterEndpoint: 
+          Fn::GetAtt:
+          - RedshiftStack
+          - Outputs.RedshiftClusterEndpoint
+        RedshiftDatabase: dev  
+        RedshiftMasterUserName: masteruser
+        RedshiftMasterUserPassword: !Ref RedshiftMasterUserPassword      
+  EMRStack:
+    # 
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        InstanceType:       !Ref emrInstanceType
+        InstanceCount:      !Ref emrInstanceCount
+        # Leave ReleaseLabel as emr-5.12.0, as tested there
+        #ReleaseLabel:      !Ref emrReleaseLabel  
+        emrClusterName:     !Ref emrClusterName
+        #emrLogUri:          !Ref emrLogUri
+        #emrKeyName:        !Ref emrKeyName       
+        VPCId:              !Ref VPCId
+        VPCSubnet:          !Ref VPCSubnet 
+        S3Bucket:           !Ref rS3Bucket
+        SageMakerInstanceSecurityGroup: !Ref SageMakerInstanceSecurityGroup
+        RedshiftSecurityGroupId:        
+          Fn::GetAtt:
+          - RedshiftStack
+          - Outputs.RedshiftSecurityGroup        
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/usingsagemakernotebookstoaccessredshiftviaglue/emrgluelivyredshiftn.yaml
+  SageMakerNotebookStack:
+     # 
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        SageMakerInstanceSecurityGroup: !Ref SageMakerInstanceSecurityGroup
+        SageMakerInstanceType:          !Ref SageMakerInstanceType
+        VPCId:                          !Ref VPCId
+        VPCSubnet:                      !Ref VPCSubnet
+        SageMakerInstanceName:          !Ref SageMakerInstanceName
+        SageMakerConfigName:            !Ref SageMakerConfigName
+        emrClusterId:
+            Fn::GetAtt:
+            - EMRStack
+            - Outputs.EMRClusterId
+        RedshiftIamCopyRoleArn:
+            Fn::GetAtt:
+            - RedshiftStack
+            - Outputs.RedshiftIamCopyRoleArn              
+        GlueDatabaseName:   !Ref GlueDatabaseName
+        S3BucketName: !Ref rS3Bucket
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/usingsagemakernotebookstoaccessredshiftviaglue/sagemaker-notebook.yaml       
+Outputs:
+  S3Bucket:
+    Description: S3 Bucket that stores temp files during transfer to Redshift
+    Value: !Ref rS3Bucket # Add S3 url prefix
+  SageMakerNotebookInstanceId: 
+    Value:
+        Fn::GetAtt:
+            - SageMakerNotebookStack
+            - Outputs.SageMakerNotebookInstanceId
+  SageMakerInstanceSecurityGroupId:
+    Value: !Ref SageMakerInstanceSecurityGroup     
+  EMRClusterId:
+    Value: 
+        Fn::GetAtt:
+          - EMRStack
+          - Outputs.EMRClusterId 
+  RedshiftClusterEndpoint:
+    Description: Redshift cluster endpoint, used for client access
+    Value:
+        Fn::GetAtt:
+          - RedshiftStack
+          - Outputs.RedshiftClusterEndpoint
+  RedshiftClusterName:
+    Description: Redshift cluster's name
+    Value: 
+        Fn::GetAtt:
+          - RedshiftStack
+          - Outputs.RedshiftClusterName  
+  RedshiftSecurityGroup:
+    Description: Redshift cluster's name
+    Value: 
+        Fn::GetAtt:
+          - RedshiftStack
+          - Outputs.RedshiftSecurityGroup  
+  RedshiftIamCopyRoleArn:
+    Description: Redshift IAM copy role ARN
+    Value: 
+        Fn::GetAtt:
+          - RedshiftStack
+          - Outputs.RedshiftIamCopyRoleArn    
+  GlueRedshiftDatabase:
+    Description: Glue database for the Redshift tables
+    Value:
+        Fn::GetAtt:
+          - GlueRedshiftStack
+          - Outputs.GlueRedshiftDatabase 
+  GlueCrawlerName:
+    Description: Glue crawler
+    Value:
+        Fn::GetAtt:
+          - GlueRedshiftStack
+          - Outputs.GlueCrawlerName  
+  GlueRedshiftConnectionName:
+    Description: Glue connection to Redshift
+    Value:
+        Fn::GetAtt:
+          - GlueRedshiftStack
+          - Outputs.GlueRedshiftConnectionName 
+  GlueRedshiftServiceRole: 
+    Description: Service role for Glue connection to Redshift
+    Value:
+        Fn::GetAtt:
+          - GlueRedshiftStack
+          - Outputs.GlueRedshiftServiceRole   

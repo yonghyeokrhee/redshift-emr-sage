@@ -1,0 +1,426 @@
+---
+# Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Provision an EMR/Spark cluster with Glue Data Catalog and Redshift jars
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: EMR Options
+      Parameters:
+        - emrClusterName
+        - InstanceCount
+        - InstanceType
+        - ReleaseLabel
+        #- emrKeyName
+        #- emrLogUri
+        - VPCId
+        - VPCSubnet
+        - AccessFromCIDRBlock
+        - LivyPort
+        - NameTag
+        - EnvironmentName
+Parameters:  
+  ReleaseLabel:
+    # Tested on EMR 5.23.  Also on various (but not all) prior versions of EMR, back to 5.11 or so.
+    Type: String
+    Description: EMR release to use
+    Default: emr-5.23.0
+  emrClusterName:
+    Type: String
+    Default: sageemr
+  EnvironmentName:
+    Type: String
+    Description: >
+      An environment name that will be prefixed to resource names including
+      exported values. Should be unique per region.
+    Default: sparksage
+  #emrKeyName:
+  #  Description: SSH key pair to use for EMR node login
+  #  Type: AWS::EC2::KeyPair::KeyName
+  #  Default: winkey
+  VPCId:
+    Description: VPC for EMR nodes.
+    Type: AWS::EC2::VPC::Id
+  VPCSubnet:
+    Description: Subnet for EMR nodes, from the VPC selected above
+    Type: AWS::EC2::Subnet::Id
+  InstanceCount:
+    Description: Number of core nodes to provision (1-20)
+    Type: Number
+    MinValue: '1'
+    MaxValue: '20'
+    Default: '2'
+  LivyPort:
+    Type: Number
+    Default: 8998
+    Description: Port for Livy service to listen on      
+  InstanceType:
+    Type: String
+    Default: m5.2xlarge
+    AllowedValues:
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m5.2xlarge
+      - c4.large
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - r3.xlarge
+      - r3.2xlarge
+      - r3.4xlarge
+      - r3.8xlarge
+    Description: EMR node ec2 instance type - you can add more types by expanding
+      on this list.
+  NameTag:
+    Type: String
+    MinLength: 1
+    Default: sparksage
+    Description: Environment name of the cluster
+  S3Bucket:
+    Description: S3 bucket for temp files, is cleaned as part of cleanup
+    Type: String
+  RedshiftSecurityGroupId:  
+    #Type: AWS::EC2::SecurityGroup 
+    Type: String
+  SageMakerInstanceSecurityGroup:
+    Description: Security group that the SageMaker instance will launched in
+    #Type: AWS::EC2::SecurityGroup
+    Type: String    
+Resources:
+  AllowLivyPort:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: sparksage
+      VpcId:
+        Ref: VPCId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: !Ref LivyPort
+        ToPort: !Ref LivyPort
+        SourceSecurityGroupId: !Ref SageMakerInstanceSecurityGroup
+  rEMREC2InstanceProfile:
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: rEMREC2Role
+    Type: AWS::IAM::InstanceProfile
+  rEMREC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role
+      #- arn:aws:iam::aws:policy/AWSGlueConsoleSageMakerNotebookFullAccess
+      Policies:
+      - PolicyName: EMRAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Resource: "*"
+            Action:
+            - elasticmapreduce:list*
+            #- athena:*
+            - glue:GetConnection
+            Effect: Allow
+  rEMRServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - elasticmapreduce.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
+  SparkCluster:
+    DependsOn: EMRCleanup
+    Type: AWS::EMR::Cluster
+    Properties:
+      Applications:
+      - Name: Hadoop
+      - Name: Hive
+      - Name: Spark
+      - Name: Ganglia
+      - Name: Livy
+      BootstrapActions:
+      - Name: Install-Packages
+        ScriptBootstrapAction:
+          Path: file:/usr/bin/sudo
+          Args:
+          - "pip"
+          - "install"
+          - "boto3"
+          - "pandas"
+          - "sklearn"
+          - "seaborn"
+          #- "pyathenajdbc"
+      - Name: Get-minimal-json-jar
+        ScriptBootstrapAction:
+          Path: file:/usr/bin/wget
+          Args:
+          - "https://github.com/ralfstx/minimal-json/releases/download/0.9.4/minimal-json-0.9.4.jar"
+          - "-P"
+          - "/mnt/jars/"
+      - Name: Get-spark-avro-jar
+        ScriptBootstrapAction:
+          Path: file:/usr/bin/wget
+          Args:
+          - "https://repo1.maven.org/maven2/com/databricks/spark-avro_2.11/3.0.0/spark-avro_2.11-3.0.0.jar"
+          - "-P"
+          - "/mnt/jars/"
+      - Name: Get-spark-redshift-jar
+        ScriptBootstrapAction:
+          Path: file:/usr/bin/wget
+          Args:
+          - "https://repo1.maven.org/maven2/com/databricks/spark-redshift_2.10/2.0.0/spark-redshift_2.10-2.0.0.jar"
+          - "-P"
+          - "/mnt/jars/"
+      Configurations:
+      # Look here for more info on configurations: https://docs.aws.amazon.com/emr/latest/ReleaseGuide/emr-release-5x.html
+      - Classification: hadoop-log4j
+        ConfigurationProperties:
+          log4j.rootCategory: 'ERROR,console'
+        Configurations: []
+      - Classification: spark
+        ConfigurationProperties:
+          maximizeResourceAllocation: true
+        Configurations: []
+      - Classification: spark-log4j
+        ConfigurationProperties:
+          log4j.logger.org.apache.spark: ERROR
+        Configurations: []        
+      - Classification: livy-conf
+        ConfigurationProperties:
+          livy.repl.enable-hive-context: true
+        Configurations: []  
+      - Classification: hive-site
+        ConfigurationProperties:
+          hive.metastore.client.factory.class: com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory
+        Configurations: []  
+      - Classification: spark-hive-site
+        ConfigurationProperties:
+          hive.metastore.client.factory.class: com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory
+        Configurations: []
+      - Classification: spark-defaults
+        ConfigurationProperties:
+          spark.driver.extraClassPath: ':/usr/lib/hadoop-lzo/lib/*:/usr/lib/hadoop/hadoop-aws.jar:/usr/share/aws/aws-java-sdk/*:/usr/share/aws/emr/emrfs/conf:/usr/share/aws/emr/emrfs/lib/*:/usr/share/aws/emr/emrfs/auxlib/*:/usr/share/aws/emr/security/conf:/usr/share/aws/emr/security/lib/*:/usr/share/aws/hmclient/lib/aws-glue-datacatalog-spark-client.jar:/usr/share/java/Hive-JSON-Serde/hive-openx-serde.jar:/usr/share/aws/sagemaker-spark-sdk/lib/sagemaker-spark-sdk.jar:/mnt/jars/*:/usr/share/aws/redshift/jdbc/RedshiftJDBC41.jar'
+          spark.executor.extraClassPath: ':/usr/lib/hadoop-lzo/lib/*:/usr/lib/hadoop/hadoop-aws.jar:/usr/share/aws/aws-java-sdk/*:/usr/share/aws/emr/emrfs/conf:/usr/share/aws/emr/emrfs/lib/*:/usr/share/aws/emr/emrfs/auxlib/*:/usr/share/aws/emr/security/conf:/usr/share/aws/emr/security/lib/*:/usr/share/aws/hmclient/lib/aws-glue-datacatalog-spark-client.jar:/usr/share/java/Hive-JSON-Serde/hive-openx-serde.jar:/usr/share/aws/sagemaker-spark-sdk/lib/sagemaker-spark-sdk.jar:/mnt/jars/*:/usr/share/aws/redshift/jdbc/RedshiftJDBC41.jar'
+        Configurations: []
+      Instances:
+        AdditionalMasterSecurityGroups:
+        - Fn::GetAtt:
+          - AllowLivyPort
+          - GroupId
+        - !Ref RedshiftSecurityGroupId
+        AdditionalSlaveSecurityGroups:
+        - !Ref RedshiftSecurityGroupId
+        #Ec2KeyName:
+        #  Ref: emrKeyName
+        Ec2SubnetId:
+          Ref: VPCSubnet
+        MasterInstanceGroup:
+          InstanceCount: 1
+          InstanceType:
+            Ref: InstanceType
+        CoreInstanceGroup:
+          InstanceCount:
+            Ref: InstanceCount
+          InstanceType:
+            Ref: InstanceType
+      Name: !Ref emrClusterName
+      JobFlowRole:
+        Ref: rEMREC2InstanceProfile
+      ServiceRole:
+        Ref: rEMRServiceRole
+      VisibleToAllUsers: true
+      ReleaseLabel: !Ref ReleaseLabel
+      LogUri: 
+          !Join
+            - ""
+            - - "s3://"
+              - !Ref S3Bucket
+              - "/emrlogs/"
+      Tags:
+      - Key: Name
+        Value: !Sub "${NameTag}-spark-sage"
+  EMRCleanup:
+    Type: Custom::EMRCleanup
+    Properties:
+      ServiceToken: !GetAtt EMRCleanupFunction.Arn
+  EMRCleanupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt EMRCleanupExecutionRole.Arn
+      Runtime: python2.7
+      Timeout: 300
+      Code:
+        ZipFile: !Sub |
+            from __future__ import print_function
+            import json
+            import boto3
+            import cfnresponse
+            import time
+            def handler(event, context):
+                print(json.dumps(event))
+                if (event["RequestType"] == "Delete"):
+                    try:
+                        deleteSecurityGroups("${VPCId}")
+                        teardown_tempfiles_bucket("${S3Bucket}")
+                    except Exception as e:
+                        print("Exception thrown: %s" % str(e))
+                        pass
+                else:
+                    print("RequestType %s, nothing to do" % event["RequestType"])
+                time.sleep(30)  # pause for CloudWatch logs
+                print('Done')
+                responseData={"Data":"OK"}
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+            def deleteSecurityGroups(vpcid):
+                time.sleep(30)  # delay to avoid dependency race condition
+                ec2 = boto3.resource('ec2')
+                vpc = ec2.Vpc(vpcid)
+                # Fist, delete EMR Default VPC Security Group Rules
+                for sg in vpc.security_groups.all():
+                   if "ElasticMapReduce" not in sg.group_name:
+                       continue
+                   print("Deleting rules for SG: " + str(sg))
+                   for rule in sg.ip_permissions:
+                       try:
+                           sg.revoke_ingress(
+                               IpPermissions=[{
+                                   "IpProtocol":rule["IpProtocol"],
+                                   "FromPort":rule["FromPort"],
+                                   "ToPort":rule["ToPort"],
+                                   "UserIdGroupPairs":rule["UserIdGroupPairs"]}]
+                               )
+                       except Exception as e:
+                           print(str(e))
+                # Now, delete the VPC Security Groups
+                for sg in vpc.security_groups.all():
+                   if "ElasticMapReduce" not in sg.group_name:
+                       continue
+                   print("Deleting SG: " + str(sg))
+                   try:
+                       sg.delete()
+                   except Exception as e:
+                       print(str(e))
+                       pass
+            def teardown_tempfiles_bucket(s3_bucket):
+                print('Emptying bucket ' + s3_bucket)
+                s3_resource = boto3.resource('s3')               
+                bucket = s3_resource.Bucket(s3_bucket)
+                # Empty S3 bucket
+                #bucket.objects.all().delete()
+                for obj in bucket.objects.filter():
+                    print('Deleting ' + str(obj.key))
+                    s3_resource.Object(bucket.name, obj.key).delete()
+                print('Emptied bucket ' + s3_bucket)
+  EMRCleanupExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: LogsForLambda
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource:
+                - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}*"
+                - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}*:*"
+      - PolicyName: S3TempBucketDelete
+        PolicyDocument:         
+          Version: '2012-10-17'
+          Statement:
+          - Sid: VisualEditor0
+            Effect: Allow
+            Action:
+            - s3:DeleteObject
+            - s3:GetObjectAcl
+            - s3:DeleteObjectVersion
+            - s3:GetBucketLocation
+            - s3:List*
+            Resource:
+            - !Join
+              - ""
+              - - "arn:aws:s3:::"
+                - !Ref S3Bucket
+            - !Join
+              - ""
+              - - "arn:aws:s3:::"
+                - !Ref S3Bucket                
+                - "/*"
+          - Sid: VisualEditor1
+            Effect: Allow
+            Action:
+            - s3:GetAccessPoint
+            - s3:GetAccountPublicAccessBlock
+            - s3:ListAccessPoints
+            - s3:HeadBucket
+            Resource:
+            - !Join
+              - ""
+              - - "arn:aws:s3:::"
+                - !Ref S3Bucket                
+      - PolicyName: EC2DescribeDeleleRevokeSg
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - ec2:Describe*
+                - ec2:DeleteSecurityGroup
+                - ec2:RevokeSecurityGroupIngress
+              Resource: '*'
+              Condition:
+                ArnEqualsIfExists:
+                  ec2:Vpc: !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VPCId}"
+
+Outputs:
+  EMRClusterId:
+    Value: !Ref SparkCluster

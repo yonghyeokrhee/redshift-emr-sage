@@ -1,0 +1,148 @@
+---
+# Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a SageMaker notebook configured for Livy/EMR
+Parameters:
+  SageMakerInstanceType:
+    Description: The type of SageMaker notebook to be provisioned
+    Type: String
+    Default: ml.m4.xlarge
+    AllowedValues:
+    - ml.t2.medium
+    - ml.t2.large
+    - ml.t2.xlarge
+    - ml.t2.2xlarge
+    - ml.m4.xlarge
+    - ml.m4.2xlarge
+    - ml.m4.4xlarge
+    - ml.m4.10xlarge
+    - ml.m4.16xlarge
+    - ml.p2.xlarge
+    - ml.p2.8xlarge
+    - ml.p2.16xlarge
+    - ml.p3.2xlarge
+    - ml.p3.8xlarge
+    - ml.p3.16xlarge
+  VPCSubnet:
+    Description: Subnet in which to launch this SageMaker notebook
+    Type: AWS::EC2::Subnet::Id
+  SageMakerInstanceName:
+    Description: Name for the SageMaker notebook instance
+    Type: String
+    Default: sagegluetest
+  VPCId:
+    Description: VPC in which to launch this stack
+    Type: AWS::EC2::VPC::Id
+  SageMakerConfigName:
+    Description: Lifecycle ConfigName
+    Type: String
+    Default: gluesageconfig
+  emrClusterId:
+    Description: EMR cluster id with Glue Data Catalog access
+    Type: String
+  GlueDatabaseName:
+    Description: Glue database for the Redshift tables
+    Type: String
+  RedshiftIamCopyRoleArn:
+    Description: Redshift IAM copy role ARN
+    Type: String  
+  S3BucketName:
+    Description: S3 temp bucket for Redshift copy files
+    Type: String        
+  SageMakerInstanceSecurityGroup:  
+    #Type: AWS::EC2::SecurityGroup 
+    Type: String
+Resources:  
+  SageMakerExecutionRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "sagemaker.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+      - PolicyName:
+          Fn::Sub: "${AWS::StackName}-sageemr"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Resource: "*"
+            Action:
+            - "elasticmapreduce:ListInstances"          
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      - arn:aws:iam::aws:policy/AWSGlueConsoleSageMakerNotebookFullAccess
+      - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess      
+  SageMakerLifeCycleConfig: 
+    Type: "AWS::SageMaker::NotebookInstanceLifecycleConfig"
+    Properties:
+      OnStart:
+        - Content:
+            Fn::Base64: !Sub |
+                #!/bin/bash
+                #set –e 
+                pip install seaborn
+                # Identify EMR cluster, set up Livy and configure with cluster ID address
+                EMRGLUEIP=`aws emr list-instances --cluster-id ${emrClusterId} --instance-group-types MASTER --region ${AWS::Region} | jq -r '.Instances[0].PrivateIpAddress' `
+
+                echo $(date +%F_%T) 'Using: ${emrClusterId}: ' $EMRGLUEIP
+
+                wget -O /home/ec2-user/SageMaker/.sparkmagic/config.json https://raw.githubusercontent.com/jupyter-incubator/sparkmagic/master/sparkmagic/example_config.json 
+                sed -i -e "s/localhost/$EMRGLUEIP/g" /home/ec2-user/SageMaker/.sparkmagic/config.json
+                # Next line needed to bypass 'failed to register auto_viz' error in recent version
+                sed -i -e 's/"use_auto_viz": true/"use_auto_viz": false/g' /home/ec2-user/SageMaker/.sparkmagic/config.json
+                
+                # Copy over Notebook, and replace variables with system settings
+                wget -O /home/ec2-user/SageMaker/Using_SageMaker_Notebooks_to_access_Redshift_via_Glue.ipynb https://aws-bigdata-blog.s3.amazonaws.com/artifacts/usingsagemakernotebookstoaccessredshiftviaglue/Using_SageMaker_Notebooks_to_access_Redshift_via_Glue.ipynb
+                chmod +666 /home/ec2-user/SageMaker/*.ipynb
+
+                REDSHIFTARN=${RedshiftIamCopyRoleArn}
+                S3BUCKET=${S3BucketName}
+                GLUEDATABASE=${GlueDatabaseName}
+                REGION=${AWS::Region}
+                sed -i -e "s=<REGION>=$REGION=g" /home/ec2-user/SageMaker/Using_SageMaker_Notebooks_to_access_Redshift_via_Glue.ipynb
+                sed -i -e "s=<REDSHIFTIAMCOPYROLE>=$REDSHIFTARN=g" /home/ec2-user/SageMaker/Using_SageMaker_Notebooks_to_access_Redshift_via_Glue.ipynb
+                sed -i -e "s/<S3BUCKET>/$S3BUCKET/g" /home/ec2-user/SageMaker/Using_SageMaker_Notebooks_to_access_Redshift_via_Glue.ipynb
+                sed -i -e "s/<GLUEDATABASE>/$GLUEDATABASE/g" /home/ec2-user/SageMaker/Using_SageMaker_Notebooks_to_access_Redshift_via_Glue.ipynb
+
+                
+      NotebookInstanceLifecycleConfigName: !Ref SageMakerConfigName
+  SageMakerNotebookInstance:
+    Type: "AWS::SageMaker::NotebookInstance"
+    Properties:
+      InstanceType:
+        Ref: SageMakerInstanceType
+      RoleArn: !GetAtt SageMakerExecutionRole.Arn
+      SubnetId:  !Ref VPCSubnet
+      NotebookInstanceName: !Ref SageMakerInstanceName
+      LifecycleConfigName: !Ref SageMakerConfigName
+      SecurityGroupIds: 
+        - 
+            Ref: SageMakerInstanceSecurityGroup
+          
+Outputs:
+  SageMakerNotebookInstanceId:
+    Value: !Ref SageMakerNotebookInstance 
+ 

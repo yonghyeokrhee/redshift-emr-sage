@@ -1,0 +1,182 @@
+---
+# Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a Glue database, a Redshift connection, and a crawler
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Glue Configuration
+      Parameters:
+      - GlueDatabaseName
+      - GlueCrawlerName
+      - GlueRedshiftConnectionName
+      - AvailabilityZone
+      - SecurityGroupId
+      - VPCSubnet
+    - Label:
+        default: Redshift cluster to crawl
+      Parameters:
+      - RedshiftClusterEndpoint
+      - RedshiftMasterUsername
+      - RedshiftMasterUserPassword
+      - RedshiftDatabase
+Parameters:
+  GlueDatabaseName:
+    Type: String
+    Default: irisred
+  GlueCrawlerName:
+    Type: String
+    Default: IrisRedshiftCrawler
+  GlueRedshiftConnectionName:
+    Type: String
+    Default: GlueRedshiftIrisConnection  
+  AvailabilityZone: 
+    Type: String
+    Default: us-west-2a
+  SecurityGroupId:
+    Type: String 
+  VPCSubnet:
+    Description: Subnet in which to launch this stack 
+    Type: AWS::EC2::Subnet::Id  
+  RedshiftClusterEndpoint: 
+    Description: Redshift cluster endpoint (including port)
+    Type: String
+  RedshiftMasterUserName:
+    Description: The user name that is associated with the master user account for
+      the cluster that is being created
+    Type: String
+    Default: masteruser
+    AllowedPattern: "([a-z])([a-z]|[0-9])*"
+  RedshiftMasterUserPassword:
+    Description: The password that is associated with the master user account for
+      the cluster that is being created.
+    Type: String
+    NoEcho: 'true'
+    AllowedPattern: ".*\\S+.*"
+    #AllowedPattern: "([a-z])([a-z]|[0-9]|[A-Z])*"    
+  RedshiftDatabase:
+    Description: The database that the Glue crawler should crawl
+    Type: String
+    Default: dev    
+Resources:
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      #Policies:
+      #  -
+      #    PolicyName: "root"
+      #    PolicyDocument:
+      #      Version: "2012-10-17"
+      #      Statement:
+      #        -
+      #          Effect: "Allow"
+      #          Action: "*"
+      #          Resource: "*" 
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      #- arn:aws:iam::aws:policy/AmazonS3FullAccess                
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref GlueDatabaseName
+  GlueRedshiftConnection:
+      Type: "AWS::Glue::Connection"
+      Properties:
+          ConnectionInput: 
+            Description: String
+            ConnectionType: JDBC
+            PhysicalConnectionRequirements: 
+                AvailabilityZone: !Ref AvailabilityZone
+                SecurityGroupIdList: 
+                  - !Ref SecurityGroupId
+                SubnetId: !Ref VPCSubnet
+            ConnectionProperties: 
+                  "JDBC_CONNECTION_URL":
+                      Fn::Join:
+                      - ""
+                      - - "jdbc:redshift://"
+                        - !Ref RedshiftClusterEndpoint
+                        - "/"
+                        - !Ref RedshiftDatabase
+                  "USERNAME": !Ref RedshiftMasterUserName
+                  "PASSWORD": !Ref RedshiftMasterUserPassword
+            Name: !Ref GlueRedshiftConnectionName
+          CatalogId: !Ref AWS::AccountId
+  GlueRedshiftCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Ref GlueCrawlerName
+      Role: !GetAtt GlueServiceRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        JdbcTargets: 
+          - ConnectionName: !Ref GlueRedshiftConnection
+            Path: 
+                Fn::Join:
+                      - "/"
+                      - - !Ref RedshiftDatabase
+                        - "%"
+            #Exclusions: 
+            #  - String
+      SchemaChangePolicy:
+        UpdateBehavior: "UPDATE_IN_DATABASE"
+        DeleteBehavior: "LOG"
+      #Schedule:
+      #  ScheduleExpression: "cron(0/10 * ? * MON-FRI *)"
+Outputs:
+  GlueRedshiftServiceRole:
+    Description: Glue Redshift Service Role ARN
+    Value:
+      Ref: GlueServiceRole
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-GlueRedshiftServiceRole"
+  GlueRedshiftDatabase:
+    Description: Glue database for the Redshift tables
+    Value:
+      Ref: GlueDatabase
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-GlueRedshiftDatabase" 
+  GlueCrawlerName:
+    Description: Glue crawler
+    Value:
+      Ref: GlueCrawlerName
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-GlueCrawlerName"  
+  GlueRedshiftConnectionName:
+    Description: Glue connection to Redshift
+    Value:
+      Ref: GlueRedshiftConnectionName
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-GlueRedshiftConnectionName"           
